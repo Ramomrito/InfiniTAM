@@ -65,6 +65,8 @@ void ITMSceneReconstructionEngine_CPU<TVoxel, ITMVoxelBlockHash>::IntegrateIntoS
 
 	float mu = scene->sceneParams->mu; int maxW = scene->sceneParams->maxW;
 
+	// TODO: Get the semantic/label information here (from the view)
+
 	float *depth = view->depth->GetData(MEMORYDEVICE_CPU);
 	float *confidence = view->depthConfidence->GetData(MEMORYDEVICE_CPU);
 	Vector4u *rgb = view->rgb->GetData(MEMORYDEVICE_CPU);
@@ -108,8 +110,32 @@ void ITMSceneReconstructionEngine_CPU<TVoxel, ITMVoxelBlockHash>::IntegrateIntoS
 			pt_model.z = (float)(globalPos.z + z) * voxelSize;
 			pt_model.w = 1.0f;
 
-			ComputeUpdatedVoxelInfo<TVoxel::hasColorInformation,TVoxel::hasConfidenceInformation, TVoxel>::compute(localVoxelBlock[locId], pt_model, M_d, 
-				projParams_d, M_rgb, projParams_rgb, mu, maxW, depth, confidence, depthImgSize, rgb, rgbImgSize);
+			// Use a different function for voxels with semantic information
+			if (TVoxel::hasSemanticInformation) {
+				// Do TSDF + semantic fusion
+				// TODO: Actually add the label_img argument and use it in function definition
+
+				// For now these functions are dummies that do not actually perform semantic fusion
+				float eta = computeUpdatedVoxelSemanticDepthInfo<TVoxel>(
+								localVoxelBlock[locId], pt_model, M_d, projParams_d, mu, 
+								maxW, depth, depthImgSize);
+
+				if ((eta > mu) || (fabs(eta / mu) > 0.25f)) {
+					// Do nothing ... 
+					// I should really create a new ComputeUpdatedVoxelInfo struct!
+				} else {
+					// This would not work because it does color update with a voxel that does not handle color!
+					// computeUpdatedVoxelSemanticInfo(localVoxelBlock[locId], pt_model, M_rgb, projParams_rgb, mu, maxW, eta, rgb, rgbImgSize);
+				}
+				
+			} else {
+				// Do regular TSDF/Color fusion
+				ComputeUpdatedVoxelInfo<TVoxel::hasColorInformation,TVoxel::hasConfidenceInformation, TVoxel>::compute(localVoxelBlock[locId], pt_model, M_d, 
+					projParams_d, M_rgb, projParams_rgb, mu, maxW, depth, confidence, depthImgSize, rgb, rgbImgSize);
+			}
+
+			// ComputeUpdatedVoxelInfo<TVoxel::hasColorInformation,TVoxel::hasConfidenceInformation, TVoxel>::compute(localVoxelBlock[locId], pt_model, M_d, 
+			// 	projParams_d, M_rgb, projParams_rgb, mu, maxW, depth, confidence, depthImgSize, rgb, rgbImgSize);
 		}
 	}
 }

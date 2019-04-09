@@ -123,6 +123,146 @@ _CPU_AND_GPU_CODE_ inline void computeUpdatedVoxelColorInfo(DEVICEPTR(TVoxel) &v
 	voxel.w_color = (uchar)newW;
 }
 
+// Try to create own computeUpdatedVoxelSemanticInfo and just call it directly in IntegrateIntoScene
+
+// Distinguish between Label fusion and Semantic fusion
+// Label fusion describes how the voxel class label is updated, whereas Semantic fusion describes
+// how the voxel depth is updated based on voxel class label 
+
+// --> Semantic Fusion incorporates semantic labels when performing the DEPTH update!
+
+// Two options: a) Update depth and labels in same function,
+//				b) Update depth and labels separately
+
+// Case a): One function for the process, but need to check that the pixel class label 
+// 			actually corresponds to voxel of interest inside
+// Case b): Two functions in sequence, evaluate (need to create 2 new functions )
+
+// --> Use case b) because it is cleaner and can follow their code analogously
+
+// Also: Which update should happen first? Depth or Semantic labelling?
+// If semantic labeling happens first, can utilize latest information for the depth fusion
+// but might be worth trying both variants! But I need eta to update semantic labeling!
+
+// --> Depth first then semantic label fusion
+
+// TODO: Function for Semantic Fusion
+template<class TVoxel>
+_CPU_AND_GPU_CODE_ inline float computeUpdatedVoxelSemanticDepthInfo(DEVICEPTR(TVoxel) &voxel, const THREADPTR(Vector4f) & pt_model, const CONSTPTR(Matrix4f) & M_d,
+	const CONSTPTR(Vector4f) & projParams_d, float mu, int maxW, const CONSTPTR(float) *depth, const CONSTPTR(Vector2i) & imgSize)
+{
+	Vector4f pt_camera; Vector2f pt_image;
+	float depth_measure, eta, oldF, newF;
+	int oldW, newW, locId;
+
+	// project point into image
+	pt_camera = M_d * pt_model;
+	if (pt_camera.z <= 0) return -1;
+
+	pt_image.x = projParams_d.x * pt_camera.x / pt_camera.z + projParams_d.z;
+	pt_image.y = projParams_d.y * pt_camera.y / pt_camera.z + projParams_d.w;
+	if ((pt_image.x < 1) || (pt_image.x > imgSize.x - 2) || (pt_image.y < 1) || (pt_image.y > imgSize.y - 2)) return -1;
+
+	// Rounding to the nearest pixel
+	locId = (int)(pt_image.x + 0.5f) + (int)(pt_image.y + 0.5f) * imgSize.x;
+	// get measured depth from image
+	depth_measure = depth[locId];
+	if (depth_measure <= 0.0f) return -1;
+
+	// check whether voxel needs updating
+	eta = depth_measure - pt_camera.z;
+	if (eta < -mu) return eta;
+
+	// compute updated SDF value and reliability
+	oldF = TVoxel::valueToFloat(voxel.sdf); oldW = voxel.w_depth;
+
+	newF = MIN(1.0f, eta / mu);
+
+	// This weight now depends on the voxel class!
+	// Assume "label" is an array representing the segmented image, then I want the label associated
+	// with the pixel of interest and then map the label to the class-associated weight
+	// Create a map to store class:weight values? (There are 10 different classes + unknown)
+	// or the simple way with a case block
+
+	// newW = some_map[ label[locId] ];
+
+	newW = 1;
+
+	// "Semantic Fusion" uses class-dependent weighting for the depth update
+	newF = oldW * oldF + newW * newF;
+	newW = oldW + newW;
+	newF /= newW;
+	newW = MIN(newW, maxW);
+
+	// write back
+	voxel.sdf = TVoxel::floatToValue(newF);
+	voxel.w_depth = newW;
+
+	return eta;
+}
+
+// Need to check that this voxel is very close to measured surface (depth measurement) 
+// such that I can update its label, if not then return without updating label
+// --> In ComputeUpdatedVoxelInfo method or IntegrateIntoScene!
+
+// TODO: Function for Label Fusion
+template<class TVoxel>
+_CPU_AND_GPU_CODE_ inline void computeUpdatedVoxelSemanticInfo(DEVICEPTR(TVoxel) &voxel, const THREADPTR(Vector4f) & pt_model, const CONSTPTR(Matrix4f) & M_rgb,
+	const CONSTPTR(Vector4f) & projParams_rgb, float mu, uchar maxW, float eta, const CONSTPTR(Vector4u) *rgb, const CONSTPTR(Vector2i) & imgSize)
+{
+	Vector4f pt_camera; Vector2f pt_image;
+	Vector3f rgb_measure, oldC, newC; Vector3u buffV3u;
+	float newW, oldW;
+
+	buffV3u = voxel.clr;
+	oldW = (float)voxel.w_color;
+
+	oldC = TO_FLOAT3(buffV3u) / 255.0f;
+	newC = oldC;
+
+	pt_camera = M_rgb * pt_model;
+
+	pt_image.x = projParams_rgb.x * pt_camera.x / pt_camera.z + projParams_rgb.z;
+	pt_image.y = projParams_rgb.y * pt_camera.y / pt_camera.z + projParams_rgb.w;
+
+	if ((pt_image.x < 1) || (pt_image.x > imgSize.x - 2) || (pt_image.y < 1) || (pt_image.y > imgSize.y - 2)) return;
+
+	rgb_measure = TO_VECTOR3(interpolateBilinear(rgb, pt_image, imgSize)) / 255.0f;
+	//rgb_measure = rgb[(int)(pt_image.x + 0.5f) + (int)(pt_image.y + 0.5f) * imgSize.x].toVector3().toFloat() / 255.0f;
+	newW = 1;
+
+	// TODO: Update voxel class label here
+	// Update voxel labelling naiively by overwriting (use bayesian approach later)
+	// voxel.label = label[locId];
+
+	newC = oldC * oldW + rgb_measure * newW;
+	newW = oldW + newW;
+	newC /= newW;
+	newW = MIN(newW, maxW);
+
+	voxel.clr = TO_UCHAR3(newC * 255.0f);
+	voxel.w_color = (uchar)newW;
+}
+
+// XXX: Alternative is to create a new version of the templated struct ComputeUpdatedVoxelInfo!
+// template<bool hasColor, bool hasConfidence, class TVoxel, bool hasSemantic=false> struct ComputeUpdatedVoxelInfo;
+
+// // Case with semantic information, but no color or confidence
+// // TODO: Add the actual implementation of semantic update!
+// // Will need to add a new semantic label argument for the compute function if done this way!
+// template<class TVoxel>
+// struct ComputeUpdatedVoxelInfo<false, false, TVoxel> {
+// 	_CPU_AND_GPU_CODE_ static void compute(DEVICEPTR(TVoxel) & voxel, const THREADPTR(Vector4f) & pt_model,
+// 		const CONSTPTR(Matrix4f) & M_d, const CONSTPTR(Vector4f) & projParams_d,
+// 		const CONSTPTR(Matrix4f) & M_rgb, const CONSTPTR(Vector4f) & projParams_rgb,
+// 		float mu, int maxW,
+// 		const CONSTPTR(float) *depth, const CONSTPTR(float) *confidence, const CONSTPTR(Vector2i) & imgSize_d,
+// 		const CONSTPTR(Vector4u) *rgb, const CONSTPTR(Vector2i) & imgSize_rgb)
+// 	{
+// 		computeUpdatedVoxelDepthInfo(voxel, pt_model, M_d, projParams_d, mu, maxW, depth, imgSize_d);
+// 	}
+// };
+
 template<bool hasColor, bool hasConfidence, class TVoxel> struct ComputeUpdatedVoxelInfo;
 
 template<class TVoxel>

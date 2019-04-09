@@ -16,5 +16,8 @@ x64/
 /InfiniTAM/Files/Teddy/Frames
 /InfiniTAM/*.tags
 
+# VS Code Project
+/InfiniTAM/.vscode
+
 # QtCreator CMake
 CMakeLists.txt.user*
